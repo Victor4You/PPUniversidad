@@ -1,0 +1,247 @@
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import axios from 'axios';
+import md5 from 'md5';
+import { LoginDto } from './auth.controller';
+import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from '../users/user.entity';
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private get EXTERNAL_API_URL() {
+    return (
+      process.env.EXTERNAL_API_URL ||
+      'https://uneuphoniously-enteral-shelia.ngrok-free.dev/v1'
+    );
+  }
+  private readonly MASTER_TOKEN =
+    'Tyau4EiHXpVdp4bxwt4byTBg62h6fh3MHBlIc0gTeH5g13sXfBwOeX0vFcQXQcFV';
+
+  constructor(
+    private readonly jwtService: JwtService,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
+  ) {}
+
+  async validateUser(loginDto: LoginDto): Promise<Record<string, any>> {
+    try {
+      const url = `${this.EXTERNAL_API_URL}/usuarios/usuario/${loginDto.username}`;
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${this.MASTER_TOKEN.trim()}` },
+        timeout: 5000,
+      });
+
+      const externalUser = response.data;
+
+      // VALIDACIÓN 1: Contra la API Externa
+      if (!externalUser || md5(loginDto.password) !== externalUser.password) {
+        throw new UnauthorizedException('Usuario o contraseña incorrectos');
+      }
+
+      return this.sincronizarYGenerarToken(externalUser);
+    } catch (error: any) {
+      // Si el error es una UnauthorizedException (contraseña mal), la relanzamos para que no entre al modo offline
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+
+      this.logger.error(`⚠️ API EXTERNA CAÍDA O ERROR: ${error.message}`);
+
+      // MODO OFFLINE: Buscar en la base de datos local (Neon)
+      let user = await this.userRepo.findOne({
+        where: { username: loginDto.username },
+      });
+
+      const hashedInput = md5(loginDto.password);
+
+      if (!user) {
+        // CAMBIO AQUÍ: No permitas crear usuarios con cualquier contraseña si no existe
+        // Si quieres que se cree el primero, debe ser con una lógica controlada.
+        // Por ahora, lanzamos error para evitar accesos no autorizados.
+        throw new UnauthorizedException(
+          'La API externa está caída y el usuario no existe localmente',
+        );
+      }
+
+      // VALIDACIÓN 2: Contra la base de datos local (Modo Offline)
+      if (user.password !== hashedInput) {
+        throw new UnauthorizedException('Contraseña incorrecta (Modo Local)');
+      }
+
+      return {
+        id: user.id,
+        usuario: user.username,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        token: this.jwtService.sign({
+          sub: user.id,
+          username: user.username,
+          role: user.role,
+        }),
+      };
+    }
+  }
+
+  private async sincronizarYGenerarToken(externalUser: any) {
+    // LOGICA DE ROLES SOLICITADA
+    const isMarco =
+      externalUser.id === 1833 || externalUser.usuario === 'MARCO';
+    const isGerencia =
+      externalUser.empleado?.departamento?.nombre === 'GERENCIA';
+
+    // Si es Marco O si pertenece al departamento de GERENCIA, es admin. Los demás estudiantes.
+    const role = isMarco || isGerencia ? 'admin' : 'estudiante';
+
+    const userData = {
+      id: externalUser.id,
+      usuario: externalUser.usuario,
+      name: `${externalUser.nombre} ${externalUser.apellido}`.trim(),
+      email: externalUser.empleado?.email || '',
+      role: role,
+      token: this.jwtService.sign({
+        sub: externalUser.id,
+        username: externalUser.usuario,
+        role: role,
+      }),
+    };
+
+    try {
+      const localUser = await this.userRepo.findOne({
+        where: { id: externalUser.id },
+      });
+
+      if (!localUser) {
+        await this.userRepo.save(
+          this.userRepo.create({
+            id: externalUser.id,
+            username: externalUser.usuario,
+            password: externalUser.password,
+            name: userData.name,
+            email: userData.email,
+            role: role,
+          }),
+        );
+      } else if (localUser.role !== role) {
+        // Actualizamos el rol si cambió en la API externa (ej. lo ascendieron a Gerencia)
+        localUser.role = role;
+        await this.userRepo.save(localUser);
+      }
+    } catch (e) {}
+
+    return userData;
+  }
+
+  async getUserProfile(username: string) {
+    try {
+      // Usamos la variable de entorno que acabas de configurar en Vercel
+      const url = `${this.EXTERNAL_API_URL}/usuarios/usuario/${username}`;
+
+      const response = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${this.MASTER_TOKEN.trim()}`,
+          'ngrok-skip-browser-warning': 'true', // IMPORTANTE: evita que ngrok bloquee a Vercel
+        },
+        timeout: 8000,
+      });
+
+      if (response.data) {
+        // Sincronizamos con el rol local de Neon
+        const localUser = await this.userRepo.findOne({ where: { username } });
+
+        return {
+          ...response.data,
+          role: localUser?.role || 'estudiante',
+          // Aseguramos que 'usuario' y 'username' existan para el Front
+          usuario: response.data.usuario || username,
+          nombre: response.data.nombre || localUser?.name,
+        };
+      }
+    } catch (error: any) {
+      this.logger.error(`Error en Vercel consultando perfil: ${error.message}`);
+
+      // Si la API externa falla, devolvemos los datos de Neon para que la página no se quede en blanco
+      const user = await this.userRepo.findOne({ where: { username } });
+      if (!user) return null;
+
+      return {
+        ...user,
+        nombre: user.name,
+        usuario: user.username,
+        empleado: {
+          email: user.email,
+          sucursalActiva: { nombre: 'Modo Offline' },
+        },
+      };
+    }
+  }
+
+  async getInstructors() {
+    try {
+      // 1. Buscamos todos los usuarios que son 'admin' en nuestra DB local (Neon)
+      const admins = await this.userRepo.find({ where: { role: 'admin' } });
+
+      // 2. Para cada admin, intentamos traer sus datos enriquecidos de la API externa
+      const detailedAdmins = await Promise.all(
+        admins.map(async (admin) => {
+          try {
+            const extUrl = `${this.EXTERNAL_API_URL}/usuarios/usuario/${admin.username}`;
+            const response = await axios.get(extUrl, {
+              headers: {
+                Authorization: `Bearer ${this.MASTER_TOKEN.trim()}`,
+                'ngrok-skip-browser-warning': 'true',
+              },
+              timeout: 4000,
+            });
+
+            const extData = response.data;
+            // Retornamos un objeto compatible con la interfaz del Front
+            return {
+              id: admin.id,
+              nombre: `${extData.nombre} ${extData.apellido}` || admin.name,
+              especialidad:
+                extData.empleado?.perfilSalario?.perfil || 'ADMINISTRATIVO',
+              email: extData.empleado?.email || admin.email,
+              telefono: extData.empleado?.celular || 'No disponible',
+              experiencia:
+                extData.empleado?.sucursalActiva?.nombre || 'Sede Central', // Usamos sucursal como experiencia/ubicación
+              cursos: 0, // Dato local que podrías conectar después
+              avatar: extData.avatar || null,
+              estado: 'activo' as const,
+              username: admin.username,
+            };
+          } catch (e) {
+            // Si falla la API externa para un usuario, devolvemos lo que tenemos en local
+            return {
+              id: admin.id,
+              nombre: admin.name,
+              especialidad: 'INSTRUCTOR',
+              email: admin.email,
+              telefono: 'No disponible',
+              experiencia: 'Colaborador',
+              cursos: 0,
+              avatar: null,
+              estado: 'activo' as const,
+              username: admin.username,
+            };
+          }
+        }),
+      );
+
+      return detailedAdmins;
+    } catch (error) {
+      this.logger.error(`Error obteniendo instructores: ${error.message}`);
+      return [];
+    }
+  }
+  async getUsersBySucursal(id: string) {
+    return [];
+  }
+  async searchUsersPartial(t: string) {
+    return this.userRepo.find();
+  }
+  register(d: any) {
+    return this.userRepo.save(this.userRepo.create(d));
+  }
+}
