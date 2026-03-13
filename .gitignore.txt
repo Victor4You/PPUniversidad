@@ -1,0 +1,5 @@
+# Ignorar carpetas de compilación y ejecutables
+frontend_universidad/dist-electron/
+*.exe
+*.asar
+node_modules/

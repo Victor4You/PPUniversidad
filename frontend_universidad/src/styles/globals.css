@@ -75,8 +75,9 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     line-height: 1.5;
-    color: #1f2937; /* gray-800 */
-    background-color: #f9fafb; /* gray-50 */
+    color: #1f2937;
+    /* Cambia #f9fafb por transparent */
+    background-color: transparent;
   }
 
   /* Tipografía */
@@ -331,6 +332,32 @@
 /* UTILIDADES PERSONALIZADAS */
 /* ============================================= */
 @layer utilities {
+  .bg-dashboard-universidad {
+    position: relative;
+    min-height: 100vh;
+    background-image: url("/assets/images/fondo_general.png");
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    z-index: 0;
+  }
+
+  .bg-dashboard-universidad::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    /* Bajamos de 0.7 a 0.5 para que la imagen sea más visible */
+    background-color: rgba(255, 255, 255, 0.5);
+    z-index: -1;
+  }
+
+  /* Asegura que el DashboardLayout y sus hijos estén arriba del velo */
+  .bg-dashboard-universidad > * {
+    position: relative;
+    z-index: 1;
+  }
+
   /* Animaciones */
   .animate-fade-in {
     animation: fadeIn 0.3s ease-in-out;
@@ -799,4 +826,26 @@
 
 .gradient-warning {
   background: linear-gradient(135deg, var(--color-warning), #fbbf24);
+}
+
+/* Esto quita el color sólido de las páginas internas del dashboard */
+.bg-dashboard-universidad .flex.h-screen,
+.bg-dashboard-universidad aside,
+.bg-dashboard-universidad main.flex-1,
+.bg-dashboard-universidad .overflow-y-auto,
+.bg-dashboard-universidad main.flex-1 > div {
+  background-color: transparent !important;
+}
+
+/* Sidebar traslúcido para que combine */
+.bg-dashboard-universidad aside {
+  background-color: rgba(15, 23, 42, 0.8) !important;
+  backdrop-filter: blur(10px);
+}
+
+
+/* EXCEPCIÓN: El Header DEBE ser sólido o más opaco para que el menú funcione */
+header {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  z-index: 50;
 }

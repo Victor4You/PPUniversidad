@@ -120,6 +120,13 @@ export class CoursesController {
 
     return this.coursesService.remove(id);
   }
+  @Post('kardex/:userId') // Cambiado de @Get a @Post para coincidir con el front
+  async getKardex(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Res() res: any, // Usamos any para evitar conflictos de tipos con Response
+  ) {
+    return this.coursesService.generateKardex(userId, res);
+  }
 
   @Get('reports/stats')
   async getStats() {

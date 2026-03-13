@@ -153,7 +153,7 @@ export default function Feed() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen">
       <div className={`${isMobile ? "p-3" : "max-w-7xl mx-auto p-4 lg:p-6"}`}>
         {!isMobile && (
           <div className="mb-8">

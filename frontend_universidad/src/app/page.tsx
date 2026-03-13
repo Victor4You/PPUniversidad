@@ -56,8 +56,8 @@ export default function HomePage() {
 
   // SI ESTÁ AUTENTICADO: Tu Header original (Sin el saludo "Hola, Juan" que agregué y no estaba)
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm border-b border-gray-200">
+    <div className="min-h-screen bg-dashboard-universidad">
+      <header className="bg-white/70 backdrop-blur-md shadow-sm border-b border-gray-200 sticky top-0 z-50">
         <div
           className={`${isMobile ? "px-3" : "max-w-7xl mx-auto px-4 lg:px-8"}`}
         >

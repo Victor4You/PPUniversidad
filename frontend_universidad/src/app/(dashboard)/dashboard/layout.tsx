@@ -1,10 +1,10 @@
 // src/app/(dashboard)/dashboard/layout.tsx
-'use client';
+"use client";
 
-import { DashboardLayout } from '@/components/dashboard/DashboardLayout/DashboardLayout';
-import { useAuth } from '@/hooks/useAuth';
-import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { DashboardLayout } from "@/components/dashboard/DashboardLayout/DashboardLayout";
+import { useAuth } from "@/hooks/useAuth";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export default function DashboardRootLayout({
   children,
@@ -16,7 +16,7 @@ export default function DashboardRootLayout({
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.push('/login');
+      router.push("/login");
     }
   }, [isAuthenticated, isLoading, router]);
 
@@ -36,8 +36,8 @@ export default function DashboardRootLayout({
   }
 
   return (
-    <DashboardLayout>
-      {children}
-    </DashboardLayout>
+    <div className="bg-dashboard-universidad min-h-screen">
+      <DashboardLayout>{children}</DashboardLayout>
+    </div>
   );
 }

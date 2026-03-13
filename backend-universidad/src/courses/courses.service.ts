@@ -347,7 +347,7 @@ export class CoursesService {
         .slice(0, 5),
     };
   }
-async generateDiplomaPdf(userId: number, courseId: number, res: any) {
+  async generateDiplomaPdf(userId: number, courseId: number, res: any) {
     // 1. Obtener datos reales de las tablas que SI existen en tu constructor
     // Buscamos el curso
     const course = await this.courseRepository.findOne({
@@ -356,11 +356,13 @@ async generateDiplomaPdf(userId: number, courseId: number, res: any) {
 
     // Como no tienes tabla de Usuarios local, buscamos el nombre en la tabla de Enrollments (Inscripciones)
     const enrollment = await this.enrollmentRepository.findOne({
-      where: { userId: userId, courseId: Number(courseId) }
+      where: { userId: userId, courseId: Number(courseId) },
     });
 
     if (!course || !enrollment) {
-      throw new Error('No se encontró el curso o la inscripción del usuario para generar el diploma');
+      throw new Error(
+        'No se encontró el curso o la inscripción del usuario para generar el diploma',
+      );
     }
 
     // 2. Ruta del template (Asegúrate que el archivo esté en esta carpeta)
@@ -368,9 +370,11 @@ async generateDiplomaPdf(userId: number, courseId: number, res: any) {
       process.cwd(),
       'src/assets/diploma_base.pdf',
     );
-    
+
     if (!fs.existsSync(templatePath)) {
-        throw new Error('No se encontró el archivo base del diploma en src/assets/diploma_base.pdf');
+      throw new Error(
+        'No se encontró el archivo base del diploma en src/assets/diploma_base.pdf',
+      );
     }
 
     const existingPdfBytes = fs.readFileSync(templatePath);
@@ -386,7 +390,8 @@ async generateDiplomaPdf(userId: number, courseId: number, res: any) {
     const fontItalic = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
 
     // 5. Insertar NOMBRE (Usamos el nombre guardado en la inscripción)
-    const nombreEstudiante = enrollment.userName || enrollment.userUsername || 'Estudiante';
+    const nombreEstudiante =
+      enrollment.userName || enrollment.userUsername || 'Estudiante';
     const fontSizeNombre = 45;
     const nombreWidth = fontItalic.widthOfTextAtSize(
       nombreEstudiante.toUpperCase(),
@@ -420,7 +425,7 @@ async generateDiplomaPdf(userId: number, courseId: number, res: any) {
       month: 'long',
       year: 'numeric',
     });
-    
+
     firstPage.drawText(fechaActual, {
       x: width / 2 - 80,
       y: 110,
@@ -496,5 +501,197 @@ async generateDiplomaPdf(userId: number, courseId: number, res: any) {
       this.logger.error(`Error extrayendo sucursales: ${error.message}`);
       return [{ id: 0, nombre: 'TODAS LAS SUCURSALES' }];
     }
+  }
+
+  async generateKardex(userId: number, res: any) {
+    let nombreEstudiante = `USUARIO ID: ${userId}`;
+
+    try {
+      const baseUrl = this.externalApiUrl.replace(/\/$/, '');
+
+      // Intentaremos buscar en las primeras 5 páginas para asegurar encontrar al usuario
+      // ya que el ?q=id no funciona y el take=500 da error 400.
+      let usuarioEncontradoApi: any = null;
+
+      for (let pagina = 1; pagina <= 20; pagina++) {
+        const url = `${baseUrl}/usuarios?page=${pagina}&q=`; // Usamos la estructura que te funcionó
+
+        this.logger.log(`[KARDEX] Buscando en API página ${pagina}...`);
+
+        const response = await axios.get(url, {
+          headers: { Authorization: `Bearer ${this.masterToken}` },
+        });
+
+        const lista = response.data?.data;
+
+        if (Array.isArray(lista)) {
+          usuarioEncontradoApi = lista.find(
+            (u: any) => String(u.id) === String(userId),
+          );
+
+          if (usuarioEncontradoApi) {
+            this.logger.log(
+              `[KARDEX] ✅ Usuario ${userId} encontrado en la página ${pagina}`,
+            );
+            break; // Salimos del bucle for
+          }
+        }
+
+        // Si la API nos dice que ya no hay más páginas, paramos
+        if (response.data?.meta?.pages && pagina >= response.data.meta.pages)
+          break;
+      }
+
+      if (usuarioEncontradoApi) {
+        const nom = (usuarioEncontradoApi.nombre || '').trim();
+        const ape = (usuarioEncontradoApi.apellido || '').trim();
+        if (nom || ape) {
+          nombreEstudiante = `${nom} ${ape}`.trim().toUpperCase();
+        }
+      } else {
+        this.logger.warn(
+          `[KARDEX] ⚠️ El ID ${userId} no se encontró en las páginas consultadas.`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(`[KARDEX ERROR] Fallo crítico de API: ${e.message}`);
+      // Si falla la API, el PDF se generará con "USUARIO ID: XXXX" para no bloquear al usuario
+    }
+
+    // --- RESTO DEL CÓDIGO (DB LOCAL Y PDF) ---
+    const enrollments = await this.enrollmentRepository.find({
+      where: { userId },
+    });
+    const completions = await this.completionRepository.find({
+      where: { userId },
+    });
+    const allCourses = await this.courseRepository.find({
+      order: { id: 'ASC' },
+    });
+
+    const pdfDoc = await PDFDocument.create();
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontNormal = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    let page = pdfDoc.addPage([600, 800]);
+    const { height } = page.getSize();
+
+    page.drawText('KARDEX ACADÉMICO - UNIVERSIDAD PURO POLLO', {
+      x: 50,
+      y: height - 50,
+      size: 18,
+      font: fontBold,
+    });
+    page.drawText(`ESTUDIANTE: ${nombreEstudiante}`, {
+      x: 50,
+      y: height - 80,
+      size: 11,
+      font: fontNormal,
+    });
+    page.drawText(`FECHA DE EMISIÓN: ${new Date().toLocaleDateString()}`, {
+      x: 50,
+      y: height - 100,
+      size: 10,
+      font: fontNormal,
+    });
+
+    let yPos = height - 150;
+    const tableLeft = 50;
+    const tableWidth = 500;
+    const rowHeight = 25;
+    // ... (Encabezados de tabla iguales al código anterior)
+    page.drawLine({
+      start: { x: tableLeft, y: yPos + 15 },
+      end: { x: tableLeft + tableWidth, y: yPos + 15 },
+      thickness: 1.5,
+    });
+    page.drawText('CURSO', {
+      x: tableLeft + 5,
+      y: yPos,
+      size: 9,
+      font: fontBold,
+    });
+    page.drawText('FECHA', { x: 280, y: yPos, size: 9, font: fontBold });
+    page.drawText('ESTADO', { x: 370, y: yPos, size: 9, font: fontBold });
+    page.drawText('VALOR', { x: 450, y: yPos, size: 9, font: fontBold });
+    page.drawText('LOGRADOS', { x: 510, y: yPos, size: 9, font: fontBold });
+
+    // Línea divisoria debajo del encabezado
+    page.drawLine({
+      start: { x: tableLeft, y: yPos - 10 },
+      end: { x: tableLeft + tableWidth, y: yPos - 10 },
+      thickness: 1,
+    });
+
+    yPos -= 30;
+
+    let totalCreditosLogrados = 0;
+    for (const course of allCourses) {
+      const enrollment = enrollments.find((e) => e.courseId === course.id);
+      const completion = completions.find((c) => c.courseId === course.id);
+      if (!enrollment && !completion) continue;
+
+      const fechaTexto = completion
+        ? new Date(completion.completedAt).toLocaleDateString()
+        : '---';
+      const estado = completion ? 'Finalizado' : 'En curso';
+      const valorCurso = Number(course.creditos) || 0;
+      const logrados = completion ? valorCurso : 0;
+      totalCreditosLogrados += logrados;
+
+      // Dibujar texto de la fila
+      page.drawText(course.nombre.substring(0, 45).toUpperCase(), {
+        x: tableLeft + 5,
+        y: yPos,
+        size: 8,
+        font: fontNormal,
+      });
+      page.drawText(fechaTexto, { x: 280, y: yPos, size: 8, font: fontNormal });
+      page.drawText(estado, { x: 370, y: yPos, size: 8, font: fontNormal });
+      page.drawText(valorCurso.toString(), {
+        x: 465,
+        y: yPos,
+        size: 8,
+        font: fontNormal,
+      });
+      page.drawText(logrados.toString(), {
+        x: 530,
+        y: yPos,
+        size: 8,
+        font: fontNormal,
+      });
+
+      // Dibujar línea horizontal punteada o tenue para cada fila
+      page.drawLine({
+        start: { x: tableLeft, y: yPos - 10 },
+        end: { x: tableLeft + tableWidth, y: yPos - 10 },
+        thickness: 0.5,
+        opacity: 0.5,
+      });
+
+      yPos -= rowHeight;
+
+      // Control de nueva página
+      if (yPos < 80) {
+        page = pdfDoc.addPage([600, 800]);
+        yPos = height - 50;
+      }
+    }
+
+    // --- LÍNEA FINAL DE CIERRE ---
+    page.drawText(`TOTAL CRÉDITOS ACUMULADOS: ${totalCreditosLogrados}`, {
+      x: 320,
+      y: yPos - 20,
+      size: 11,
+      font: fontBold,
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=Kardex_${userId}.pdf`,
+    );
+    res.send(Buffer.from(pdfBytes));
   }
 }

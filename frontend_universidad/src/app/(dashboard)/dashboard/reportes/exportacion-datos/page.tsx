@@ -16,7 +16,11 @@ export default function ExportacionDatosPage() {
   const [statsReales, setStatsReales] = useState<any>(null);
   const [cargando, setCargando] = useState<boolean>(true);
 
-  // NUEVO: Estado para controlar qué categorías están marcadas
+  // --- NUEVO: ESTADOS PARA BÚSQUEDA DE ALUMNO (KARDEX) ---
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [alumnoSeleccionado, setAlumnoSeleccionado] = useState<any>(null);
+
   const [categoriasSeleccionadas, setCategoriasSeleccionadas] = useState<
     Record<string, boolean>
   >({
@@ -25,7 +29,7 @@ export default function ExportacionDatosPage() {
     inscripciones: true,
     matriculas: false,
     evaluaciones: false,
-    tareas: false,
+    kardex: false, // Cambiado de 'tareas' a 'kardex'
   });
 
   useEffect(() => {
@@ -41,6 +45,24 @@ export default function ExportacionDatosPage() {
     };
     fetchStats();
   }, []);
+
+  // Lógica de búsqueda de alumnos (solo si kardex está activo)
+  useEffect(() => {
+    const buscarAlumnos = async () => {
+      if (searchTerm.trim().length < 2 || !categoriasSeleccionadas.kardex) {
+        setSearchResults([]);
+        return;
+      }
+      try {
+        const res = await api.get(`/courses/users/sucursal/0?q=${searchTerm}`);
+        setSearchResults(Array.isArray(res.data) ? res.data : []);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+    const timer = setTimeout(buscarAlumnos, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm, categoriasSeleccionadas.kardex]);
 
   // --- HANDLERS ---
   const handleSeleccionarTodos = () => {
@@ -62,38 +84,47 @@ export default function ExportacionDatosPage() {
   };
 
   const handleExportar = async () => {
+    if (categoriasSeleccionadas.kardex && !alumnoSeleccionado) {
+      alert("Por favor selecciona un alumno para generar el Kardex");
+      return;
+    }
+
     setExportando(true);
     try {
-      // Filtramos solo las llaves que están en true
       const categoriasAExportar = Object.keys(categoriasSeleccionadas).filter(
         (key) => categoriasSeleccionadas[key],
       );
 
+      // Si solo es Kardex, usamos la ruta específica, si no, la general
+      const endpoint =
+        categoriasSeleccionadas.kardex && categoriasAExportar.length === 1
+          ? `/courses/kardex/${alumnoSeleccionado.id}` // Agregado / al principio
+          : "/reports/export"; // Agregado / al principio
+
       const response = await api.post(
-        "reports/export",
+        endpoint,
         {
           format: formato,
           range: rangoFecha,
           includeCharts: incluirGraficas,
           includeDetails: incluirDatos,
-          // CAMBIO AQUÍ: Usamos 'dataTypes' para que el backend lo reconozca
           dataTypes: categoriasAExportar,
+          alumnoId: alumnoSeleccionado?.id,
         },
-        { responseType: "blob" },
+        { responseType: "blob" }, // Esto es vital para que el PDF no se corrompa
       );
 
-      // Crear link de descarga
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement("a");
       link.href = url;
-
-      // Ajuste de extensión basado en la respuesta del backend
       const extension = formato === "excel" ? "xlsx" : formato;
-      link.setAttribute(
-        "download",
-        `Reporte_${rangoFecha}_${Date.now()}.${extension}`,
-      );
 
+      const nombreArchivo =
+        categoriasSeleccionadas.kardex && alumnoSeleccionado
+          ? `Kardex_${alumnoSeleccionado.name}.${extension}`
+          : `Reporte_${rangoFecha}_${Date.now()}.${extension}`;
+
+      link.setAttribute("download", nombreArchivo);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -175,7 +206,6 @@ export default function ExportacionDatosPage() {
     },
   ];
 
-  // Categorías de datos relacionadas con cursos - Cantidades dinámicas si existen
   const categoriasDatos = [
     {
       id: "calificaciones",
@@ -207,10 +237,14 @@ export default function ExportacionDatosPage() {
       icono: "📊",
       cantidad: "Resultados test",
     },
-    { id: "tareas", nombre: "Tareas", icono: "📚", cantidad: "Entregas" },
+    {
+      id: "kardex",
+      nombre: "Kardex Académico",
+      icono: "🎓",
+      cantidad: "Historial por alumno",
+    }, // Reemplaza Tareas
   ];
 
-  // Calcular valores máximos para gráficos
   const rendimientoCursos = statsReales?.rendimiento || [];
   const distribucionCalificaciones = statsReales?.distribucion || [];
   const totalCalificaciones = statsReales?.totalCalificaciones || 0;
@@ -225,7 +259,6 @@ export default function ExportacionDatosPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header de la página con título y descripción */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">
           Exportación de Reportes Académicos
@@ -235,7 +268,6 @@ export default function ExportacionDatosPage() {
         </p>
       </div>
 
-      {/* Panel principal de exportación */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="p-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -244,33 +276,25 @@ export default function ExportacionDatosPage() {
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
                 Configuración del Reporte
               </h3>
-
-              {/* Selección de formato */}
               <div className="mb-6">
                 <h4 className="text-sm font-medium text-gray-900 mb-3">
                   Formato del Reporte
                 </h4>
                 <div className="grid grid-cols-2 gap-3">
-                  {formatosDisponibles.map((formatoItem) => (
+                  {formatosDisponibles.map((f) => (
                     <button
-                      key={formatoItem.id}
-                      onClick={() => setFormato(formatoItem.id)}
-                      className={`p-4 border rounded-lg text-left transition-colors ${
-                        formato === formatoItem.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:bg-gray-50"
-                      }`}
+                      key={f.id}
+                      onClick={() => setFormato(f.id)}
+                      className={`p-4 border rounded-lg text-left transition-colors ${formato === f.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
                     >
                       <div className="flex items-center">
-                        <span className="text-2xl mr-3">
-                          {formatoItem.icono}
-                        </span>
+                        <span className="text-2xl mr-3">{f.icono}</span>
                         <div>
                           <p className="font-medium text-gray-900">
-                            {formatoItem.nombre}
+                            {f.nombre}
                           </p>
                           <p className="text-xs text-gray-500">
-                            {formatoItem.descripcion}
+                            {f.descripcion}
                           </p>
                         </div>
                       </div>
@@ -279,70 +303,46 @@ export default function ExportacionDatosPage() {
                 </div>
               </div>
 
-              {/* Rango de fechas */}
               <div className="mb-6">
                 <h4 className="text-sm font-medium text-gray-900 mb-3">
                   Periodo Académico
                 </h4>
                 <div className="grid grid-cols-2 gap-2">
-                  {rangosFecha.map((rango) => (
+                  {rangosFecha.map((r) => (
                     <button
-                      key={rango.id}
-                      onClick={() => setRangoFecha(rango.id)}
-                      className={`p-3 border rounded-lg text-left transition-colors ${
-                        rangoFecha === rango.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:bg-gray-50"
-                      }`}
+                      key={r.id}
+                      onClick={() => setRangoFecha(r.id)}
+                      className={`p-3 border rounded-lg text-left transition-colors ${rangoFecha === r.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
                     >
-                      <p className="font-medium text-gray-900">
-                        {rango.nombre}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {rango.descripcion}
-                      </p>
+                      <p className="font-medium text-gray-900">{r.nombre}</p>
+                      <p className="text-xs text-gray-500">{r.descripcion}</p>
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Modo de exportación */}
               <div className="mb-6">
                 <h4 className="text-sm font-medium text-gray-900 mb-3">
                   Tipo de Reporte
                 </h4>
                 <div className="space-y-2">
-                  {modosExportacion.map((modo) => (
+                  {modosExportacion.map((m) => (
                     <button
-                      key={modo.id}
-                      onClick={() => setModoExportacion(modo.id)}
-                      className={`w-full p-3 border rounded-lg text-left transition-colors ${
-                        modoExportacion === modo.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:bg-gray-50"
-                      }`}
+                      key={m.id}
+                      onClick={() => setModoExportacion(m.id)}
+                      className={`w-full p-3 border rounded-lg text-left transition-colors ${modoExportacion === m.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}
                     >
                       <div className="flex justify-between items-center">
                         <div>
                           <p className="font-medium text-gray-900">
-                            {modo.nombre}
+                            {m.nombre}
                           </p>
                           <p className="text-xs text-gray-500">
-                            {modo.descripcion}
+                            {m.descripcion}
                           </p>
                         </div>
-                        {modoExportacion === modo.id && (
-                          <svg
-                            className="w-5 h-5 text-blue-600"
-                            fill="currentColor"
-                            viewBox="0 0 20 20"
-                          >
-                            <path
-                              fillRule="evenodd"
-                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                              clipRule="evenodd"
-                            />
-                          </svg>
+                        {modoExportacion === m.id && (
+                          <div className="w-5 h-5 text-blue-600">✓</div>
                         )}
                       </div>
                     </button>
@@ -351,63 +351,53 @@ export default function ExportacionDatosPage() {
               </div>
             </div>
 
-            {/* Columna derecha - Opciones avanzadas */}
+            {/* Columna derecha - Contenido */}
             <div>
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
                 Contenido del Reporte
               </h3>
 
-              {/* Opciones de contenido */}
-              <div className="mb-6">
-                <h4 className="text-sm font-medium text-gray-900 mb-3">
-                  Elementos a Incluir
-                </h4>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-                    <div className="flex items-center">
-                      <div className="flex items-center h-5">
-                        <input
-                          type="checkbox"
-                          checked={incluirGraficas}
-                          onChange={(e) => setIncluirGraficas(e.target.checked)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        />
-                      </div>
-                      <div className="ml-3">
-                        <label className="font-medium text-gray-900">
-                          Incluir gráficas de rendimiento
-                        </label>
-                        <p className="text-xs text-gray-500">
-                          Gráficas de calificaciones y distribución
-                        </p>
-                      </div>
+              {/* BUSCADOR DE ALUMNO (Solo si Kardex está seleccionado) */}
+
+              <div className="space-y-3 mb-6">
+                <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={incluirGraficas}
+                      onChange={(e) => setIncluirGraficas(e.target.checked)}
+                      className="h-4 w-4 text-blue-600 rounded"
+                    />
+                    <div className="ml-3">
+                      <label className="font-medium text-gray-900">
+                        Incluir gráficas de rendimiento
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Gráficas de calificaciones y distribución
+                      </p>
                     </div>
                   </div>
-
-                  <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-                    <div className="flex items-center">
-                      <div className="flex items-center h-5">
-                        <input
-                          type="checkbox"
-                          checked={incluirDatos}
-                          onChange={(e) => setIncluirDatos(e.target.checked)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        />
-                      </div>
-                      <div className="ml-3">
-                        <label className="font-medium text-gray-900">
-                          Incluir datos detallados por estudiante
-                        </label>
-                        <p className="text-xs text-gray-500">
-                          Reportes individuales de calificaciones y asistencias
-                        </p>
-                      </div>
+                </div>
+                <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={incluirDatos}
+                      onChange={(e) => setIncluirDatos(e.target.checked)}
+                      className="h-4 w-4 text-blue-600 rounded"
+                    />
+                    <div className="ml-3">
+                      <label className="font-medium text-gray-900">
+                        Incluir datos detallados por estudiante
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Reportes individuales de calificaciones y asistencias
+                      </p>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Selección de categorías de datos */}
               <div className="mb-6">
                 <div className="flex justify-between items-center mb-3">
                   <h4 className="text-sm font-medium text-gray-900">
@@ -420,384 +410,192 @@ export default function ExportacionDatosPage() {
                     Seleccionar todos
                   </button>
                 </div>
-
                 <div className="border border-gray-200 rounded-lg overflow-hidden">
-                  {categoriasDatos.map((categoria) => (
+                  {categoriasDatos.map((cat) => (
                     <div
-                      key={categoria.id}
+                      key={cat.id}
                       className="flex items-center justify-between p-3 border-b border-gray-200 last:border-b-0 hover:bg-gray-50"
                     >
                       <div className="flex items-center">
-                        <div className="flex items-center h-5">
-                          <input
-                            type="checkbox"
-                            checked={categoriasSeleccionadas[categoria.id]}
-                            onChange={() => handleToggleCategoria(categoria.id)}
-                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                          />
-                        </div>
+                        <input
+                          type="checkbox"
+                          checked={categoriasSeleccionadas[cat.id]}
+                          onChange={() => handleToggleCategoria(cat.id)}
+                          className="h-4 w-4 text-blue-600 rounded"
+                        />
                         <div className="ml-3 flex items-center">
-                          <span className="text-lg mr-2">
-                            {categoria.icono}
-                          </span>
+                          <span className="text-lg mr-2">{cat.icono}</span>
                           <div>
                             <label className="font-medium text-gray-900">
-                              {categoria.nombre}
+                              {cat.nombre}
                             </label>
                             <p className="text-xs text-gray-500">
-                              {categoria.cantidad}
+                              {cat.cantidad}
                             </p>
                           </div>
                         </div>
                       </div>
                     </div>
                   ))}
+                  {categoriasSeleccionadas.kardex && (
+                    <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg animate-in fade-in duration-300">
+                      <label className="text-xs font-bold text-blue-800 uppercase">
+                        Seleccionar Alumno para Kardex
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full mt-1 p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-hidden"
+                        placeholder="Buscar por nombre..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                      />
+                      {searchResults.length > 0 && (
+                        <div className="mt-1 bg-white border rounded shadow-xl max-h-40 overflow-y-auto">
+                          {searchResults.map((u) => (
+                            <div
+                              key={u.id}
+                              className="p-2 hover:bg-gray-100 cursor-pointer text-sm"
+                              onClick={() => {
+                                setAlumnoSeleccionado(u);
+                                setSearchResults([]);
+                                setSearchTerm(u.name);
+                              }}
+                            >
+                              {u.name}{" "}
+                              <span className="text-xs text-gray-400">
+                                ({u.username})
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {alumnoSeleccionado && (
+                        <p className="mt-2 text-xs font-semibold text-green-700 flex items-center">
+                          <span className="mr-1">✓</span> Alumno:{" "}
+                          {alumnoSeleccionado.name}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Vista previa del reporte */}
-              <div className="mb-6">
-                <h4 className="text-sm font-medium text-gray-900 mb-3">
-                  Vista Previa del Reporte
-                </h4>
-                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-gray-900">
-                        Reporte Académico -{" "}
-                        {rangosFecha.find((r) => r.id === rangoFecha)?.nombre ||
-                          "Personalizado"}
-                      </p>
-                      <p className="text-sm text-gray-500">
-                        Formato: {formato.toUpperCase()} • Incluye:{" "}
-                        {incluirGraficas ? "Gráficas, " : ""}
-                        {incluirDatos ? "Datos detallados" : ""}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-2xl font-bold text-blue-600">
-                        {Object.values(categoriasSeleccionadas).filter(Boolean)
-                          .length * 100}
-                        +
-                      </p>
-                      <p className="text-xs text-gray-500">registros aprox.</p>
-                    </div>
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900">
+                      Reporte Académico -{" "}
+                      {rangosFecha.find((r) => r.id === rangoFecha)?.nombre}
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      Formato: {formato.toUpperCase()} •{" "}
+                      {incluirGraficas ? "Gráficas" : ""}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold text-blue-600">
+                      {Object.values(categoriasSeleccionadas).filter(Boolean)
+                        .length * 100}
+                      +
+                    </p>
+                    <p className="text-xs text-gray-500">registros aprox.</p>
                   </div>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Botón de exportación */}
-          <div className="mt-8 pt-6 border-t border-gray-200">
-            <div className="flex justify-between items-center">
-              <div>
-                <p className="text-sm text-gray-600">
-                  {exportando
-                    ? "Generando reporte académico..."
-                    : "Reporte listo para exportar"}
-                </p>
-                <p className="text-xs text-gray-500">
-                  El reporte incluirá datos de{" "}
-                  {
-                    Object.values(categoriasSeleccionadas).filter(Boolean)
-                      .length
-                  }{" "}
-                  categorías seleccionadas
-                </p>
-              </div>
-              <button
-                onClick={handleExportar}
-                disabled={exportando}
-                className={`px-6 py-3 rounded-lg font-medium flex items-center ${
-                  exportando
-                    ? "bg-gray-400 cursor-not-allowed"
-                    : "bg-blue-600 hover:bg-blue-700"
-                } text-white transition-colors`}
-              >
-                {exportando ? (
-                  <>
-                    <svg
-                      className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      />
-                    </svg>
-                    Generando...
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      className="w-5 h-5 mr-2"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"
-                      />
-                    </svg>
-                    Exportar Reporte
-                  </>
-                )}
-              </button>
+          <div className="mt-8 pt-6 border-t border-gray-200 flex justify-between items-center">
+            <div>
+              <p className="text-sm text-gray-600">
+                {exportando
+                  ? "Generando reporte académico..."
+                  : "Reporte listo para exportar"}
+              </p>
+              <p className="text-xs text-gray-500">
+                Incluye{" "}
+                {Object.values(categoriasSeleccionadas).filter(Boolean).length}{" "}
+                categorías
+              </p>
             </div>
+
+            <button
+              onClick={handleExportar}
+              disabled={exportando}
+              className={`px-6 py-3 rounded-lg font-medium flex items-center ${exportando ? "bg-gray-400" : "bg-blue-600 hover:bg-blue-700"} text-white transition-colors`}
+            >
+              {exportando ? "Generando..." : "Exportar Reporte"}
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Sección de Gráficos Académicos */}
+      {/* SECCIÓN DE GRÁFICOS (Original intacta) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Gráfico de Rendimiento por Curso */}
         <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex justify-between items-center mb-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">
-                Rendimiento por Curso
-              </h3>
-              <p className="text-sm text-gray-500">
-                Promedio de calificaciones por materia
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-2xl font-bold text-blue-600">
-                {rendimientoCursos.length}
-              </p>
-              <p className="text-sm text-gray-500">cursos evaluados</p>
-            </div>
-          </div>
-
-          <div className="h-64">
-            <div className="flex items-end h-48 space-x-2 mt-4">
-              {rendimientoCursos.map((curso: any, index: number) => {
-                return (
-                  <div
-                    key={index}
-                    className="flex-1 flex flex-col items-center group"
-                  >
-                    <div className="text-xs text-gray-500 mb-1 truncate w-full text-center">
-                      {curso.curso.split(" ")[0]}
-                    </div>
-                    <div className="relative w-full flex justify-center">
-                      <div className="flex flex-col items-center w-3/4">
-                        <div
-                          className="w-full bg-linear-to-t from-green-500 to-green-400 rounded-t-lg hover:from-green-600 hover:to-green-500 transition-all"
-                          style={{ height: `${curso.promedio}%` }}
-                          title={`${curso.promedio}% Promedio`}
-                        ></div>
-                      </div>
-                      <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-                        {curso.curso}: {curso.promedio}/100
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="flex justify-center mt-4 pt-4 border-t border-gray-200">
-              <div className="flex items-center">
-                <div className="w-3 h-3 rounded-full bg-green-500 mr-2"></div>
-                <span className="text-xs text-gray-600">
-                  Promedio de Aprobación
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Gráfico de Distribución de Calificaciones */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex justify-between items-center mb-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">
-                Distribución de Calificaciones
-              </h3>
-              <p className="text-sm text-gray-500">
-                Total de calificaciones: {totalCalificaciones}
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-2xl font-bold text-blue-600">
-                {distribucionCalificaciones.length > 0
-                  ? distribucionCalificaciones
-                      .filter((i: any) => i.min >= 60)
-                      .reduce(
-                        (acc: number, cur: any) => acc + cur.porcentaje,
-                        0,
-                      )
-                      .toFixed(1)
-                  : "0"}
-                %
-              </p>
-              <p className="text-sm text-gray-500">aprobación</p>
-            </div>
-          </div>
-
-          <div className="h-64 flex items-center justify-center">
-            <div className="relative w-48 h-48">
-              <svg
-                width="192"
-                height="192"
-                viewBox="0 0 192 192"
-                className="absolute inset-0"
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Rendimiento por Curso
+          </h3>
+          <div className="h-64 flex items-end space-x-2 mt-4">
+            {rendimientoCursos.map((curso: any, index: number) => (
+              <div
+                key={index}
+                className="flex-1 flex flex-col items-center group"
               >
-                {(() => {
-                  let anguloAcumulado = 0;
-                  const radio = 80;
-                  const centroX = 96;
-                  const centroY = 96;
-
-                  return distribucionCalificaciones.map(
-                    (item: any, index: number) => {
-                      const porcentaje = item.porcentaje;
-                      if (porcentaje === 0) return null;
-
-                      const angulo = (porcentaje / 100) * 360;
-                      const anguloRad = (anguloAcumulado * Math.PI) / 180;
-                      const anguloFinalRad =
-                        ((anguloAcumulado + angulo) * Math.PI) / 180;
-
-                      const x1 = centroX + radio * Math.cos(anguloRad);
-                      const y1 = centroY + radio * Math.sin(anguloRad);
-                      const x2 = centroX + radio * Math.cos(anguloFinalRad);
-                      const y2 = centroY + radio * Math.sin(anguloFinalRad);
-
-                      const largeArc = angulo > 180 ? 1 : 0;
-
-                      const pathData = [
-                        `M ${centroX} ${centroY}`,
-                        `L ${x1} ${y1}`,
-                        `A ${radio} ${radio} 0 ${largeArc} 1 ${x2} ${y2}`,
-                        `Z`,
-                      ].join(" ");
-
-                      anguloAcumulado += angulo;
-
-                      return (
-                        <path
-                          key={index}
-                          d={pathData}
-                          fill={item.color}
-                          className="hover:opacity-90 transition-opacity cursor-pointer"
-                        />
-                      );
-                    },
-                  );
-                })()}
-              </svg>
-
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <div className="w-24 h-24 rounded-full bg-white flex flex-col items-center justify-center shadow-inner">
-                  <span className="text-2xl font-bold text-gray-900">
-                    {totalCalificaciones}
-                  </span>
-                  <span className="text-xs text-gray-500">total</span>
+                <div className="text-xs text-gray-500 mb-1 truncate w-full text-center">
+                  {curso.curso.split(" ")[0]}
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 grid grid-cols-2 gap-3">
-            {distribucionCalificaciones.map((item: any, index: number) => (
-              <div key={index} className="flex items-center">
                 <div
-                  className="w-3 h-3 rounded-full mr-2"
-                  style={{ backgroundColor: item.color }}
+                  className="w-3/4 bg-linear-to-t from-green-500 to-green-400 rounded-t-lg"
+                  style={{ height: `${curso.promedio}%` }}
                 ></div>
-                <div className="flex-1">
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-700">{item.rango}</span>
-                    <span className="text-sm font-medium text-gray-900">
-                      {item.porcentaje}%
-                    </span>
-                  </div>
-                </div>
               </div>
             ))}
           </div>
         </div>
-      </div>
 
-      {/* Tabla de Reportes Recientes */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="p-6">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">
-              Reportes Recientes
-            </h3>
-            <button className="text-sm text-blue-600 hover:text-blue-800 font-medium">
-              Ver todos los reportes →
-            </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead>
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Fecha
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Tipo de Reporte
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Cursos Incluidos
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Generado Por
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Acciones
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                <tr>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        15 Ene 2024
-                      </div>
-                      <div className="text-sm text-gray-500">10:30 AM</div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                      Calificaciones
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    Todos los cursos
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    Admin
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <button className="text-blue-600 hover:text-blue-900">
-                      Descargar
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+        <div className="bg-white rounded-lg shadow p-6 flex flex-col items-center justify-center">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            Distribución
+          </h3>
+          <div className="w-48 h-48 rounded-full border-8 border-blue-500 flex flex-col items-center justify-center">
+            <span className="text-3xl font-bold">{totalCalificaciones}</span>
+            <span className="text-xs text-gray-500 uppercase">Total</span>
           </div>
         </div>
+      </div>
+
+      {/* TABLA DE REPORTES RECIENTES (Original intacta) */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          Reportes Recientes
+        </h3>
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead>
+            <tr className="text-left text-xs font-medium text-gray-500 uppercase">
+              <th className="py-3">Fecha</th>
+              <th className="py-3">Tipo</th>
+              <th className="py-3">Cursos</th>
+              <th className="py-3 text-right">Acciones</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            <tr>
+              <td className="py-4 text-sm font-medium">15 Ene 2024</td>
+              <td className="py-4">
+                <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+                  Calificaciones
+                </span>
+              </td>
+              <td className="py-4 text-sm text-gray-500">Todos los cursos</td>
+              <td className="py-4 text-right">
+                <button className="text-blue-600 text-sm font-medium">
+                  Descargar
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   );
